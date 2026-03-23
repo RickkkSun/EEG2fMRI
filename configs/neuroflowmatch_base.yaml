@@ -1,0 +1,74 @@
+experiment_name: neuroflowmatch_base
+
+data:
+  root: ./data
+  eeg_dirname: EEG_set
+  fmri_dirname: fMRI_difumo64
+  eeg_glob: "*.set"
+  fmri_suffix: "_difumo64_roi.pkl"
+  tr_seconds: 2.1
+  eeg_fs: 200.0
+  context_seconds: 16.0
+  chunk_length: 8
+  chunk_stride: 1
+  n_rois: 64
+  group_split_seed: 7
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  eeg_normalize: robust
+  scan_cache_size: 4
+
+model:
+  patch_size: 128
+  patch_stride: 64
+  d_model: 256
+  eeg_conv_kernel: 9
+  eeg_conv_layers: 3
+  eeg_dropout: 0.1
+  spectral_bands:
+    - [0.5, 4.0]
+    - [4.0, 8.0]
+    - [8.0, 13.0]
+    - [13.0, 30.0]
+    - [30.0, 45.0]
+  condition_heads: 4
+  condition_ff_mult: 4
+  hrf_peak_seconds: 5.0
+  hrf_sigma_seconds: 3.0
+  hrf_max_seconds: 16.0
+  flow_layers: 4
+  flow_heads: 4
+  flow_ff_mult: 4
+  flow_dropout: 0.1
+  noise_sigma: 1.0
+
+loss:
+  mean_weight: 1.0
+  temporal_weight: 0.1
+  cfm_weight: 1.0
+  huber_delta: 1.0
+
+optim:
+  lr: 0.0003
+  weight_decay: 0.0001
+  betas: [0.9, 0.95]
+  batch_size: 8
+  num_workers: 0
+  max_epochs: 80
+  mean_only_epochs: 10
+  grad_clip_norm: 1.0
+  amp: false
+  log_every: 20
+  val_every: 1
+  seed: 42
+
+eval:
+  num_samples: 8
+  ode_steps: 16
+  ode_solver: heun
+  save_predictions: false
+
+runtime:
+  output_dir: ./outputs/neuroflowmatch_base
+  device: auto
