@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>基于 HRF 感知残差条件流匹配的 EEG-to-fMRI ROI 预测基线</title>
+  <style>
+    @page { size: A4; margin: 18mm 16mm; }
+    body {
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+      color: #111827;
+      line-height: 1.72;
+      font-size: 14px;
+      margin: 0;
+      background: #ffffff;
+    }
+    h1, h2, h3 { line-height: 1.3; margin: 0 0 10px 0; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 22px; margin-top: 28px; padding-bottom: 6px; border-bottom: 2px solid #e5e7eb; }
+    h3 { font-size: 18px; margin-top: 20px; }
+    p { margin: 10px 0; }
+    ul, ol { margin: 8px 0 8px 22px; }
+    .subtitle { color: #4b5563; margin-bottom: 18px; }
+    .eq {
+      font-family: "Cambria Math", "Times New Roman", serif;
+      background: #f8fafc;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 12px 0;
+      white-space: pre-wrap;
+      font-size: 16px;
+    }
+    .card {
+      background: #f9fafb;
+      border-left: 4px solid #2563eb;
+      padding: 12px 14px;
+      margin: 12px 0;
+    }
+    .warn {
+      background: #fff7ed;
+      border-left: 4px solid #ea580c;
+      padding: 12px 14px;
+      margin: 12px 0;
+    }
+    .muted { color: #6b7280; }
+    .figure {
+      margin: 18px 0;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 12px;
+      background: #fcfcfd;
+      text-align: center;
+    }
+    img { max-width: 100%; height: auto; }
+    .small { font-size: 13px; color: #4b5563; }
+    .refs li { margin-bottom: 6px; }
+    code { background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>基于 HRF 感知残差条件流匹配的 EEG-to-fMRI ROI 预测基线</h1>
+  <div class="subtitle">数学表述、逐步解释与批判性分析</div>
+
+  <p>本文将当前仓库中的实现整理为一个可放入论文的方法基线：<b>HRF-aware Deterministic Mean + Residual Conditional Flow Matching</b>。其核心思路是：先用 EEG 条件编码预测一个确定性均值，再对均值无法解释的残差使用条件流匹配建模，从而同时得到点预测和不确定性样本。</p>
+
+  <h2>1. 问题定义与符号</h2>
+  <div class="eq">X ∈ R^(n_ch × T),    Y ∈ R^(L × R)</div>
+  <p>其中，<code>X</code> 是 EEG 输入，<code>Y</code> 是目标 ROI BOLD chunk；当前仓库默认使用 26 个 EEG 通道、8 个 TR 的 chunk 和 64 个 ROI。</p>
+
+  <div class="eq">T = T_ctx · f_s + (L − 1) · TR · f_s</div>
+  <p>这表示模型并不是用一个瞬时 EEG 采样点去预测一个 BOLD 采样点，而是使用一段较长的 EEG 窗口去预测一小段 BOLD 序列。这样做的原因是神经活动到 BOLD 之间存在血流动力学延迟。</p>
+
+  <div class="card">
+    <b>通俗理解</b><br />
+    模型在回答的问题不是“此刻 EEG 对应哪个 fMRI 值”，而是“在过去约 30 秒 EEG 背景下，接下来这一小段 ROI 级 BOLD 轨迹最可能长什么样”。
+  </div>
+
+  <h2>2. 整体 pipeline</h2>
+  <div class="figure">
+    <img src="assets/pipeline.svg" alt="pipeline" />
+    <div class="small">图 1. EEG 经双分支编码和 HRF-aware 条件对齐后，先输出均值，再对残差做 conditional flow matching。</div>
+  </div>
+
+  <div class="eq">X → Z → C → μ → R* → Ŷ</div>
+  <p>这里，<code>Z</code> 是 EEG token，<code>C</code> 是带 HRF 对齐先验的条件表示，<code>μ</code> 是确定性均值预测，<code>R*</code> 是真实残差，<code>Ŷ</code> 是最终预测。</p>
+
+  <h2>3. 从 EEG 到条件表示：X → Z → C</h2>
+
+  <h3>3.1 双分支编码</h3>
+  <div class="eq">H^temp = Enc_temp(X) ∈ R^(N × d)</div>
+  <div class="eq">H^spec = Enc_spec(X) ∈ R^(N × d)</div>
+  <div class="eq">Z = Fuse( PE(H^temp + H^spec) ) ∈ R^(N × d)</div>
+  <p><b>含义：</b><code>Enc_temp</code> 负责时域波形特征，<code>Enc_spec</code> 负责 patch 级频谱能量特征。两者相加后再加位置编码，得到后续所有模块共享的 EEG token。</p>
+  <p><b>作用：</b>把很长的 EEG 波形压缩成一串“局部时域+频域摘要”的 token，既保留节律结构，也保留局部动态。</p>
+
+  <div class="warn">
+    <b>批判性见解</b><br />
+    这是合理的表征学习设计，但它仍然是经验性工程选择，而不是从 EEG-fMRI 生理耦合理论唯一推导出来的结构。
+  </div>
+
+  <h3>3.2 HRF-aware 条件对齐</h3>
+  <div class="eq">p_n = (n · s + P / 2) / f_s</div>
+  <div class="eq">τ_l = T_ctx + (l − 1) · TR</div>
+  <div class="eq">Δ_(l,n) = τ_l − p_n</div>
+  <div class="eq">B_(l,n) = - (Δ_(l,n) − τ_peak)^2 / (2 σ_hrf^2),   if 0 ≤ Δ_(l,n) ≤ τ_max
+B_(l,n) = -∞,   otherwise</div>
+  <div class="eq">C = SA( CA(Q, Z; B) ) ∈ R^(L × d)</div>
+  <p><b>含义：</b>每个待预测 BOLD 时间点都会去“看”一组 EEG token，但这种注意力不是完全自由的，而是被 HRF 偏置矩阵 <code>B</code> 约束。时差接近 HRF 峰值时，注意力得分更高；超过最大合理延迟时直接屏蔽。</p>
+  <p><b>作用：</b>把“神经活动经过数秒延迟才体现在 BOLD 上”的先验编码进网络中，让模型更容易学到正确的时间对齐关系。</p>
+
+  <div class="warn">
+    <b>批判性见解</b><br />
+    这一步是 <b>HRF-aware</b>，但不是严格的生理 HRF 卷积模型。它更像“带血流延迟先验的注意力”，而非个体化血流动力学估计。
+  </div>
+
+  <h2>4. 确定性主干：C → μ</h2>
+  <div class="eq">μ = f_mean(C) ∈ R^(L × R)</div>
+  <div class="eq">L_mean = λ_mean · Huber(μ, Y) + λ_td · || Δ_t μ − Δ_t Y ||_1</div>
+  <div class="eq">Δ_t A = A_(2:L) − A_(1:L−1)</div>
+  <p><b>含义：</b><code>μ</code> 是在当前 EEG 条件下最可能的 ROI BOLD 序列中心估计。Huber 损失约束绝对数值误差，时间差分项约束上升、下降和变化趋势。</p>
+  <p><b>作用：</b>先把最稳定、最容易预测的主趋势学出来，后续生成分支只需要处理“均值没解释掉的部分”。</p>
+
+  <h2>5. 残差条件流匹配：μ → R* → R^</h2>
+  <h3>5.1 残差定义</h3>
+  <div class="eq">R* = Y − sg(μ)</div>
+  <p><b>含义：</b><code>R*</code> 是真实目标相对于均值预测的剩余误差。<code>sg</code> 表示 stop-gradient，即数值上使用均值预测，但不让残差分支的梯度直接反向改写这一步误差分解。</p>
+  <p><b>作用：</b>把整个任务拆成“先拟合主趋势，再拟合剩余不确定性”。</p>
+
+  <h3>5.2 条件流匹配目标</h3>
+  <div class="eq">ε ~ N(0, I),    t ~ Unif(0, 1)</div>
+  <div class="eq">X_t = (1 − t) σ ε + t R*</div>
+  <div class="eq">U_t = dX_t / dt = R* − σ ε</div>
+  <div class="eq">L_cfm = λ_cfm · E_(t, ε) [ || v_θ(X_t, t, C) − U_t ||_2^2 ]</div>
+  <p><b>含义：</b>模型并不直接回归真实残差，而是学习一条从噪声走到真实残差的路径。<code>X_t</code> 是路径上的中间状态，<code>U_t</code> 是理想速度，<code>v_θ</code> 则是模型学习到的条件速度场。</p>
+  <p><b>作用：</b>让模型学习“在当前条件和当前路径位置下，残差应该往哪个方向变化”，而不是只学一个单点输出。</p>
+
+  <div class="warn">
+    <b>批判性见解</b><br />
+    这里确实是 conditional flow matching，但它建模的是 <b>残差分布</b>，不是整个 BOLD 信号本体分布。因此更准确的叫法是“残差条件流匹配基线”，而不是“纯 EEG-to-fMRI CFM 模型”。
+  </div>
+
+  <h2>6. 推理：从条件表示得到最终预测</h2>
+  <div class="eq">C = f_cond(X),    μ = f_mean(C)</div>
+  <div class="eq">S_0^(m) = σ ξ^(m),    ξ^(m) ~ N(0, I)</div>
+  <div class="eq">dS_τ^(m) / dτ = v_θ(S_τ^(m), τ, C),    τ ∈ [0, 1]</div>
+  <div class="eq">R_hat^(m) = S_1^(m)</div>
+  <div class="eq">Y_hat^(m) = μ + R_hat^(m)</div>
+  <div class="eq">Y_hat = (1 / M) Σ_m Y_hat^(m)</div>
+  <p><b>含义：</b>先得到条件均值 <code>μ</code>，再从高斯噪声出发沿 learned vector field 积分到终点，得到残差样本，最后加回均值得到最终样本预测。</p>
+  <p><b>作用：</b>多次采样可以得到一组可能的 BOLD 轨迹，从而估计均值、方差、预测区间、CRPS 等概率指标。</p>
+
+  <h2>7. 课程式训练</h2>
+  <div class="eq">L = L_mean + L_cfm</div>
+  <div class="eq">L^(e) = L_mean,                    if e &lt; e_0
+L^(e) = L_mean + L_cfm,          if e ≥ e_0</div>
+  <p><b>含义：</b>前若干个 epoch 只训练均值头，待其稳定后再加入 flow 分支。</p>
+  <p><b>作用：</b>避免一开始同时学习主趋势与残差分布导致优化不稳定。</p>
+
+  <h2>8. 从 chunk 到整条 scan</h2>
+  <div class="eq">Y_hat_scan(t) = (1 / K_t) · Σ_(k: t ∈ W_k) Y_hat^(k)(t)</div>
+  <p><b>含义：</b>整条 scan 的某个时间点往往会被多个重叠 chunk 覆盖，因此对所有覆盖该时间点的 chunk 预测取平均。</p>
+  <p><b>作用：</b>减少 chunk 边界效应，并恢复完整的 ROI 时间序列。</p>
+
+  <h2>9. 这一基线在理论上是否可行</h2>
+  <p>如果任务被限定为“从同步 EEG 预测低频、ROI 级、resting-state BOLD 动态”，那么这是一个可做的统计预测问题。因为 EEG 和 fMRI 测的是同一神经活动的不同代理变量，而 ROI 压缩、低频化和同步采集都显著降低了难度。</p>
+  <p>但如果把问题说成“仅凭 scalp EEG 唯一恢复全脑真实神经活动”，那是不成立的。原因在于 EEG 逆问题本身不适定，BOLD 也只是慢速、间接、带血流延迟的代理变量。</p>
+
+  <div class="warn">
+    <b>核心批判</b><br />
+    这个仓库的方法在工程上是自洽而且值得作为 baseline 的；但它不是严格生理模型，也不是条件似然意义下完整的概率模型。论文中最好将它定位为“工程可复现的 HRF-aware residual CFM baseline”，而不是“神经血流耦合的最终答案”。
+  </div>
+
+  <h2>10. 它与 NeuroBOLT 的差异</h2>
+  <ol>
+    <li>本仓库是一个 <b>HRF-aware residual CFM baseline</b>，而不是 NeuroBOLT 原文方法本身。</li>
+    <li>本仓库从头训练 temporal + spectral encoder；NeuroBOLT 官方代码依赖预训练 LaBraM 表征。</li>
+    <li>本仓库显式分成“均值头 + 残差 flow 头”；NeuroBOLT 公开材料并未以 residual CFM 为核心。</li>
+    <li>本仓库将 HRF 先验写成固定高斯形状的 attention bias；NeuroBOLT 更强调多维特征映射而非这一具体结构。</li>
+    <li>本仓库更适合作为可运行、可消融的 compact baseline；NeuroBOLT 的定位更接近完整方法论文。</li>
+  </ol>
+
+  <h2>11. 建议在论文中如何使用这个 baseline</h2>
+  <p>建议将该方法命名为 <b>HRF-aware Deterministic Mean + Residual Conditional Flow Matching baseline</b>，并配套以下消融：</p>
+  <ul>
+    <li>只保留均值头，检验概率建模是否真的有增益。</li>
+    <li>将残差 CFM 替换为高斯 NLL 头，检验 flow 的必要性。</li>
+    <li>去掉 HRF 偏置，检验显式时延先验是否有效。</li>
+    <li>尝试 OT-CFM 或其他更强的路径设计，检验 vanilla CFM 是否已足够。</li>
+  </ul>
+
+  <h2>参考文献与链接</h2>
+  <ul class="refs">
+    <li>NeuroBOLT paper: https://openreview.net/forum?id=y6qhVtFG77</li>
+    <li>NeuroBOLT dataset README: https://huggingface.co/datasets/NeurdyLab/NeuroBOLT/blob/main/README.md</li>
+    <li>NeuroBOLT official repo: https://github.com/soupeeli/NeuroBOLT</li>
+    <li>Flow Matching for Generative Modeling: https://openreview.net/forum?id=PqvMRDCJT9t</li>
+    <li>Improving and Generalizing Flow-Based Generative Models with Minibatch Optimal Transport: https://arxiv.org/abs/2302.00482</li>
+    <li>Conditional Flow Matching for Time Series Modelling: https://openreview.net/pdf?id=Hqn4Aj7xrQ</li>
+    <li>Neural networks and foundation models: two strategies for EEG-to-fMRI prediction: https://pubmed.ncbi.nlm.nih.gov/41479845/</li>
+    <li>What we can do and what we cannot do with fMRI: https://pure.mpg.de/pubman/faces/ViewItemFullPage.jsp?itemId=item_1789866_2&amp;view=EXPORT</li>
+  </ul>
+</body>
+</html>
