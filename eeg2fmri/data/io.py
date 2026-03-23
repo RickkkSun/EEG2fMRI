@@ -156,9 +156,14 @@ def _pick_first_array(values: dict[str, Any]) -> np.ndarray:
     raise ValueError("Could not find ROI array in object.")
 
 
-def load_roi_timeseries(path: str | Path, n_rois: int = 64) -> np.ndarray:
+def load_roi_timeseries(
+    path: str | Path,
+    n_rois: int = 64,
+    return_names: bool = False,
+) -> np.ndarray | tuple[np.ndarray, list[str] | None]:
     file_path = Path(path)
     suffix = file_path.suffix.lower()
+    column_names: list[str] | None = None
 
     if suffix == ".pkl":
         with open(file_path, "rb") as handle:
@@ -175,6 +180,7 @@ def load_roi_timeseries(path: str | Path, n_rois: int = 64) -> np.ndarray:
         raise ValueError(f"Unsupported ROI format: {file_path}")
 
     if isinstance(obj, pd.DataFrame):
+        column_names = [str(col) for col in obj.columns.tolist()]
         arr = obj.select_dtypes(include=[np.number]).to_numpy(dtype=np.float32)
     elif isinstance(obj, dict):
         arr = _pick_first_array(obj)
@@ -195,5 +201,10 @@ def load_roi_timeseries(path: str | Path, n_rois: int = 64) -> np.ndarray:
 
     if arr.shape[1] > n_rois:
         arr = arr[:, :n_rois]
+        if column_names is not None:
+            column_names = column_names[:n_rois]
 
-    return arr.astype(np.float32)
+    arr = arr.astype(np.float32)
+    if return_names:
+        return arr, column_names
+    return arr

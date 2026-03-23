@@ -8,8 +8,15 @@ def mean_prediction_loss(
     prediction: torch.Tensor,
     target: torch.Tensor,
     delta: float,
+    loss_type: str = "mse",
 ) -> torch.Tensor:
-    return F.huber_loss(prediction, target, delta=delta)
+    if loss_type == "mse":
+        return F.mse_loss(prediction, target)
+    if loss_type == "mae":
+        return F.l1_loss(prediction, target)
+    if loss_type == "huber":
+        return F.huber_loss(prediction, target, delta=delta)
+    raise ValueError(f"Unknown mean prediction loss type: {loss_type}")
 
 
 def temporal_difference_loss(

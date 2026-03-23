@@ -21,7 +21,7 @@ from eeg2fmri.training.losses import (
     mean_prediction_loss,
     temporal_difference_loss,
 )
-from eeg2fmri.training.metrics import OverlapAccumulator, summarize_scan_metrics
+from eeg2fmri.training.metrics import OverlapAccumulator, ScanPrediction, summarize_scan_metrics
 from eeg2fmri.utils.checkpoint import save_checkpoint
 
 
@@ -59,6 +59,7 @@ class Trainer:
             "target": batch["target"].to(self.device, non_blocking=True),
             "scan_id": batch["scan_id"],
             "subject_id": batch["subject_id"],
+            "roi_names": batch["roi_names"],
             "start_tr": batch["start_tr"],
             "length": batch["length"],
         }
@@ -70,6 +71,7 @@ class Trainer:
         mean_loss = mean_prediction_loss(
             mean_prediction,
             target,
+            loss_type=self.config.loss.reconstruction_loss,
             delta=self.config.loss.huber_delta,
         )
         temporal_loss = temporal_difference_loss(mean_prediction, target)
@@ -135,11 +137,11 @@ class Trainer:
         return {key: float(np.mean(values)) for key, values in running.items()}
 
     @torch.no_grad()
-    def evaluate(
+    def predict(
         self,
         loader: torch.utils.data.DataLoader,
         split_name: str,
-    ) -> dict[str, float]:
+    ) -> dict[str, ScanPrediction]:
         self.model.eval()
         accumulator = OverlapAccumulator(num_samples=self.config.eval.num_samples)
         iterator = tqdm(loader, desc=f"{split_name}", leave=False)
@@ -171,10 +173,23 @@ class Trainer:
                     length=int(length[idx]),
                     prediction=prediction_np[idx],
                     target=target_np[idx],
+                    roi_names=batch["roi_names"][idx],
                     samples=sample_np[idx],
+                    subject_id=batch["subject_id"][idx],
                 )
+        return accumulator.finalize()
 
-        summary = summarize_scan_metrics(accumulator.finalize())
+    @torch.no_grad()
+    def evaluate(
+        self,
+        loader: torch.utils.data.DataLoader,
+        split_name: str,
+        return_predictions: bool = False,
+    ) -> dict[str, float] | tuple[dict[str, float], dict[str, ScanPrediction]]:
+        scan_predictions = self.predict(loader, split_name=split_name)
+        summary = summarize_scan_metrics(scan_predictions)
+        if return_predictions:
+            return {f"{split_name}_{key}": value for key, value in summary.items()}, scan_predictions
         return {f"{split_name}_{key}": value for key, value in summary.items()}
 
     def fit(
@@ -190,10 +205,10 @@ class Trainer:
             train_summary = self.train_epoch(train_loader, epoch)
             row = {"epoch": epoch, **{f"train_{k}": v for k, v in train_summary.items()}}
 
-            if epoch % self.config.optim.val_every == 0:
+            if epoch % self.config.optim.val_every == 0 and len(getattr(val_loader, "dataset", [])) > 0:
                 val_summary = self.evaluate(val_loader, split_name="val")
                 row.update(val_summary)
-                current_metric = val_summary.get("val_pearson_r", float("-inf"))
+                current_metric = val_summary.get("val_benchmark_avg_r", val_summary.get("val_pearson_r", float("-inf")))
                 if current_metric > best_metric:
                     best_metric = current_metric
                     best_summary = dict(row)
@@ -218,4 +233,15 @@ class Trainer:
             history_rows.append(row)
             self._write_history([row])
 
+        if not best_summary and history_rows:
+            best_summary = dict(history_rows[-1])
+        if not self.best_path.exists():
+            save_checkpoint(
+                self.best_path,
+                model=self.model,
+                optimizer=self.optimizer,
+                epoch=self.config.optim.max_epochs,
+                best_metric=best_metric,
+                config=asdict(self.config),
+            )
         return best_summary

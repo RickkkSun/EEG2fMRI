@@ -2,21 +2,30 @@ experiment_name: neuroflowmatch_base
 
 data:
   root: ./data
-  eeg_dirname: EEG_set
-  fmri_dirname: fMRI_difumo64
-  eeg_glob: "*.set"
+  eeg_dirname: EEG
+  fmri_dirname: fMRI
+  eeg_glob: "*_eeg.set"
   fmri_suffix: "_difumo64_roi.pkl"
   tr_seconds: 2.1
   eeg_fs: 200.0
+  resample_eeg_to_target_fs: true
   context_seconds: 16.0
   chunk_length: 8
   chunk_stride: 1
   n_rois: 64
+  target_columns:
+  include_global_signal_clean: true
+  include_global_signal_raw: false
   group_split_seed: 7
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15
-  eeg_normalize: robust
+  split_strategy: inter_subject_holdout
+  split_manifest:
+  cv_folds: 5
+  fold_index: 0
+  temporal_gap_trs: 8
+  eeg_normalize: zscore
   scan_cache_size: 4
 
 model:
@@ -44,6 +53,7 @@ model:
   noise_sigma: 1.0
 
 loss:
+  reconstruction_loss: mse
   mean_weight: 1.0
   temporal_weight: 0.1
   cfm_weight: 1.0
@@ -55,7 +65,7 @@ optim:
   betas: [0.9, 0.95]
   batch_size: 8
   num_workers: 0
-  max_epochs: 80
+  max_epochs: 200
   mean_only_epochs: 10
   grad_clip_norm: 1.0
   amp: false

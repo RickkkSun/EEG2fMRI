@@ -1,9 +1,11 @@
 torch
 numpy
 pandas
+openpyxl
 scipy
 scikit-learn
 PyYAML
 einops
 h5py
 tqdm
+matplotlib

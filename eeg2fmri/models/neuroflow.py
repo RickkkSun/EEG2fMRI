@@ -81,17 +81,26 @@ class FlowBlock(nn.Module):
 
 
 class ResidualFlowDecoder(nn.Module):
-    def __init__(self, chunk_length: int, n_rois: int, dim: int, layers: int, heads: int, ff_mult: int, dropout: float) -> None:
+    def __init__(
+        self,
+        chunk_length: int,
+        target_dim: int,
+        dim: int,
+        layers: int,
+        heads: int,
+        ff_mult: int,
+        dropout: float,
+    ) -> None:
         super().__init__()
         self.chunk_length = chunk_length
-        self.n_rois = n_rois
-        self.input_proj = nn.Linear(n_rois, dim)
+        self.target_dim = target_dim
+        self.input_proj = nn.Linear(target_dim, dim)
         self.position = LearnedPositionalEncoding(length=chunk_length, dim=dim)
         self.time_embedding = SinusoidalTimeEmbedding(dim)
         self.blocks = nn.ModuleList(
             [FlowBlock(dim=dim, heads=heads, ff_mult=ff_mult, dropout=dropout) for _ in range(layers)]
         )
-        self.output_proj = nn.Linear(dim, n_rois)
+        self.output_proj = nn.Linear(dim, target_dim)
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor, condition_tokens: torch.Tensor) -> torch.Tensor:
         x = self.input_proj(x_t)
@@ -104,11 +113,18 @@ class ResidualFlowDecoder(nn.Module):
 
 
 class NeuroFlowMatch(nn.Module):
-    def __init__(self, data_config: DataConfig, model_config: ModelConfig, n_channels: int = 26) -> None:
+    def __init__(
+        self,
+        data_config: DataConfig,
+        model_config: ModelConfig,
+        n_channels: int = 26,
+        target_dim: int | None = None,
+    ) -> None:
         super().__init__()
         self.data_config = data_config
         self.model_config = model_config
-        self.n_rois = data_config.n_rois
+        extra_targets = int(data_config.include_global_signal_clean) + int(data_config.include_global_signal_raw)
+        self.target_dim = target_dim if target_dim is not None else data_config.n_rois + extra_targets
         self.chunk_length = data_config.chunk_length
         input_samples = int(round(data_config.context_seconds * data_config.eeg_fs)) + (
             data_config.chunk_length - 1
@@ -147,11 +163,11 @@ class NeuroFlowMatch(nn.Module):
             nn.LayerNorm(model_config.d_model),
             nn.Linear(model_config.d_model, model_config.d_model),
             nn.GELU(),
-            nn.Linear(model_config.d_model, self.n_rois),
+            nn.Linear(model_config.d_model, self.target_dim),
         )
         self.flow = ResidualFlowDecoder(
             chunk_length=data_config.chunk_length,
-            n_rois=self.n_rois,
+            target_dim=self.target_dim,
             dim=model_config.d_model,
             layers=model_config.flow_layers,
             heads=model_config.flow_heads,
@@ -183,7 +199,7 @@ class NeuroFlowMatch(nn.Module):
             state = sigma * torch.randn(
                 batch_size,
                 self.chunk_length,
-                self.n_rois,
+                self.target_dim,
                 device=condition_tokens.device,
                 dtype=condition_tokens.dtype,
             )

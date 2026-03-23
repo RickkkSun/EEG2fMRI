@@ -10,21 +10,31 @@ import yaml
 @dataclass
 class DataConfig:
     root: str = "./data"
-    eeg_dirname: str = "EEG_set"
-    fmri_dirname: str = "fMRI_difumo64"
-    eeg_glob: str = "*.set"
+    eeg_dirname: str = "EEG"
+    fmri_dirname: str = "fMRI"
+    eeg_glob: str = "*_eeg.set"
     fmri_suffix: str = "_difumo64_roi.pkl"
     tr_seconds: float = 2.1
     eeg_fs: float = 200.0
+    resample_eeg_to_target_fs: bool = True
     context_seconds: float = 16.0
     chunk_length: int = 8
     chunk_stride: int = 1
     n_rois: int = 64
+    target_columns: list[str] | None = None
+    include_global_signal_clean: bool = True
+    include_global_signal_raw: bool = False
     group_split_seed: int = 7
     train_ratio: float = 0.7
     val_ratio: float = 0.15
     test_ratio: float = 0.15
-    eeg_normalize: str = "robust"
+    split_strategy: str = "inter_subject_holdout"
+    split_manifest: str | None = None
+    cv_folds: int = 5
+    fold_index: int | None = 0
+    loso_subject: str | None = None
+    temporal_gap_trs: int = 8
+    eeg_normalize: str = "zscore"
     scan_cache_size: int = 4
     max_scans: int | None = None
 
@@ -58,6 +68,7 @@ class ModelConfig:
 
 @dataclass
 class LossConfig:
+    reconstruction_loss: str = "mse"
     mean_weight: float = 1.0
     temporal_weight: float = 0.1
     cfm_weight: float = 1.0
@@ -71,7 +82,7 @@ class OptimConfig:
     betas: tuple[float, float] = (0.9, 0.95)
     batch_size: int = 8
     num_workers: int = 0
-    max_epochs: int = 80
+    max_epochs: int = 200
     mean_only_epochs: int = 10
     grad_clip_norm: float = 1.0
     amp: bool = False
